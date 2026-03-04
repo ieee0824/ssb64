@@ -19,12 +19,57 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Rename binary
-        run: cp target/release/ssb64 ssb64-darwin-arm64
+      - name: Package
+        run: |
+          mkdir ssb64-darwin-arm64
+          cp target/release/ssb64 ssb64-darwin-arm64/
+          tar czf ssb64-darwin-arm64.tar.gz ssb64-darwin-arm64
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create ${{ github.ref_name }} --generate-notes 2>/dev/null || true
-          gh release upload ${{ github.ref_name }} ssb64-darwin-arm64 --clobber
+          gh release upload ${{ github.ref_name }} ssb64-darwin-arm64.tar.gz --clobber
+
+      - name: Update Homebrew formula
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          SHA256=$(shasum -a 256 ssb64-darwin-arm64.tar.gz | awk '{print $1}')
+
+          # Setup SSH for homebrew-tap
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/homebrew_tap
+          chmod 600 ~/.ssh/homebrew_tap
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/homebrew_tap -o IdentitiesOnly=yes"
+
+          # Clone and update formula
+          git clone git@github.com:ieee0824/homebrew-tap.git /tmp/homebrew-tap
+          cat > /tmp/homebrew-tap/Formula/ssb64.rb <<EOF
+          class Ssb64 < Formula
+            desc "Screenshot to base64 clipboard tool for macOS"
+            homepage "https://github.com/ieee0824/ssb64"
+            version "${VERSION#v}"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/ieee0824/ssb64/releases/download/${VERSION}/ssb64-darwin-arm64.tar.gz"
+                sha256 "${SHA256}"
+              end
+            end
+
+            def install
+              bin.install "ssb64"
+            end
+          end
+          EOF
+
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ssb64.rb
+          git commit -m "Update ssb64 to ${VERSION}"
+          git push
